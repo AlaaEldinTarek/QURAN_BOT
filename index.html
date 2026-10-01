@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>تحفيظ القرآن</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Amiri+Quran&family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #fbf8f1);
+    --text: var(--tg-theme-text-color, #1f2a24);
+    --hint: var(--tg-theme-hint-color, #8a8f88);
+    --accent: var(--tg-theme-button-color, #1f7a4d);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --panel: var(--tg-theme-secondary-bg-color, #f0ebde);
+    --font-size: 30px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font-family: "Cairo", sans-serif; padding-bottom: 96px; }
+
+  header { padding: 14px 16px 6px; text-align: center; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 700; }
+  header p { margin: 2px 0 0; color: var(--hint); font-size: 13px; }
+
+  #text {
+    padding: 8px 16px 24px;
+    font-family: "Amiri Quran", "Amiri", serif;
+    font-size: var(--font-size);
+    line-height: 2.25;
+    text-align: justify;
+    text-align-last: center;
+  }
+  .w { border-radius: 8px; padding: 0 2px; cursor: pointer; transition: background .15s, color .15s; }
+  .w.active { background: var(--accent); color: var(--accent-text); }
+  .end { color: var(--accent); white-space: nowrap; margin: 0 2px; }
+
+  #status { text-align: center; color: var(--hint); padding: 40px 16px; font-size: 15px; }
+
+  nav {
+    position: fixed; inset: auto 0 0 0;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: var(--panel);
+    border-top: 1px solid color-mix(in srgb, var(--hint) 25%, transparent);
+  }
+  nav button {
+    font-family: inherit; font-size: 16px; font-weight: 700;
+    border: 0; border-radius: 12px; min-width: 52px; height: 48px; padding: 0 12px;
+    background: var(--bg); color: var(--text);
+  }
+  nav button:disabled { opacity: .4; }
+  #play { background: var(--accent); color: var(--accent-text); min-width: 72px; font-size: 22px; }
+  #rep { font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">…</h1>
+  <p id="sub"></p>
+</header>
+<div id="status">جاري التحميل…</div>
+<div id="text" hidden></div>
+
+<nav>
+  <button id="smaller" aria-label="تصغير الخط">ا−</button>
+  <button id="bigger" aria-label="تكبير الخط">ا+</button>
+  <button id="play" disabled aria-label="تشغيل">▶</button>
+  <button id="rep" aria-label="عدد مرات التكرار">🔁 1/3</button>
+</nav>
+
+<audio id="audio" preload="auto"></audio>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+tg?.expand();
+
+const params = new URLSearchParams(location.search);
+const S = +params.get("s") || 1;
+const A = +params.get("a") || 1;
+const B = Math.max(+params.get("b") || A, A);
+const RECITER = +params.get("r") || 12;
+let repeatTotal = +params.get("rep") || 3;
+let repeatDone = 0;
+
+const $ = (id) => document.getElementById(id);
+const audio = $("audio");
+const textEl = $("text");
+const toArabic = (n) => String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
+
+// ── حجم الخط (يُحفظ لكل مستخدم على جهازه) ──
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+let fontSize = +store.get("fontSize") || 30;
+function applyFont() {
+  document.documentElement.style.setProperty("--font-size", fontSize + "px");
+  store.set("fontSize", fontSize);
+}
+applyFont();
+$("bigger").onclick = () => { fontSize = Math.min(fontSize + 4, 64); applyFont(); };
+$("smaller").onclick = () => { fontSize = Math.max(fontSize - 4, 18); applyFont(); };
+
+// ── التكرار ──
+const REPEAT_OPTIONS = [1, 3, 5, 7, 10];
+function showRepeat() { $("rep").textContent = `🔁 ${Math.min(repeatDone + 1, repeatTotal)}/${repeatTotal}`; }
+$("rep").onclick = () => {
+  repeatTotal = REPEAT_OPTIONS[(REPEAT_OPTIONS.indexOf(repeatTotal) + 1) % REPEAT_OPTIONS.length];
+  repeatDone = Math.min(repeatDone, repeatTotal - 1);
+  showRepeat();
+};
+showRepeat();
+
+// ── تحميل الآيات والتوقيتات ──
+let segments = [];   // [{start, end, el}] لكل كلمة بالترتيب
+let startMs = 0, endMs = 0;
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function load() {
+  const pages = [];
+  for (let p = Math.ceil(A / 50); p <= Math.ceil(B / 50); p++) pages.push(p);
+  const [chapter, audioData, ...versePages] = await Promise.all([
+    getJSON(`https://api.quran.com/api/v4/chapters/${S}?language=ar`),
+    getJSON(`https://api.qurancdn.com/api/qdc/audio/reciters/${RECITER}/audio_files?chapter=${S}&segments=true`),
+    ...pages.map((p) => getJSON(
+      `https://api.quran.com/api/v4/verses/by_chapter/${S}?words=true&word_fields=text_uthmani&per_page=50&page=${p}`)),
+  ]);
+
+  $("title").textContent = `سورة ${chapter.chapter.name_arabic}`;
+  $("sub").textContent = B > A ? `الآيات ${A} – ${B}` : `الآية ${A}`;
+
+  const verses = versePages.flatMap((p) => p.verses)
+    .filter((v) => v.verse_number >= A && v.verse_number <= B);
+  const file = audioData.audio_files[0];
+  const timings = Object.fromEntries(file.verse_timings.map((t) => [+t.verse_key.split(":")[1], t]));
+
+  const frag = document.createDocumentFragment();
+  for (const v of verses) {
+    const wordEls = {};
+    for (const w of v.words) {
+      const span = document.createElement("span");
+      if (w.char_type_name === "end") {
+        span.className = "end";
+        span.textContent = `﴿${toArabic(v.verse_number)}﴾`;
+      } else {
+        span.className = "w";
+        span.textContent = w.text_uthmani;
+        wordEls[w.position] = span;
+      }
+      frag.append(span, " ");
+    }
+    for (const seg of timings[v.verse_number]?.segments || []) {
+      if (seg.length < 3) continue;
+      const [pos, start, end] = [seg[0], seg[seg.length - 2], seg[seg.length - 1]];
+      const el = wordEls[pos];
+      if (!el) continue;
+      segments.push({ start: start / 1000, end: end / 1000, el });
+      el.onclick = () => { audio.currentTime = start / 1000; play(); };
+    }
+  }
+  textEl.append(frag);
+  segments.sort((x, y) => x.start - y.start);
+
+  startMs = timings[A].timestamp_from;
+  endMs = timings[B].timestamp_to;
+  audio.src = file.audio_url;
+  audio.currentTime = startMs / 1000;
+
+  $("status").hidden = true;
+  textEl.hidden = false;
+  $("play").disabled = false;
+}
+
+// ── التشغيل وتتبّع الكلمة الحالية ──
+let active = null, raf = 0;
+
+function highlight() {
+  const t = audio.currentTime;
+  const seg = segments.find((s) => t >= s.start && t < s.end);
+  const el = seg ? seg.el : null;
+  if (el !== active) {
+    active?.classList.remove("active");
+    el?.classList.add("active");
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    active = el;
+  }
+}
+
+function tick() {
+  if (audio.currentTime >= endMs / 1000) {
+    repeatDone++;
+    if (repeatDone < repeatTotal) {
+      audio.currentTime = startMs / 1000;
+    } else {
+      repeatDone = 0;
+      audio.pause();
+      audio.currentTime = startMs / 1000;
+      tg?.HapticFeedback?.notificationOccurred("success");
+    }
+    showRepeat();
+  }
+  highlight();
+  if (!audio.paused) raf = requestAnimationFrame(tick);
+}
+
+function play() {
+  const t = audio.currentTime * 1000;
+  if (t < startMs || t >= endMs) audio.currentTime = startMs / 1000;
+  audio.play();
+}
+
+audio.onplay = () => { $("play").textContent = "⏸"; cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
+audio.onpause = () => { $("play").textContent = "▶"; highlight(); };
+$("play").onclick = () => (audio.paused ? play() : audio.pause());
+
+load().catch((e) => {
+  console.error(e);
+  $("status").textContent = "⚠️ تعذّر التحميل، تأكد من الإنترنت وحاول مرة أخرى.";
+});
+</script>
+</body>
+</html>
