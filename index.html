@@ -19,7 +19,7 @@
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
-  body { font-family: "Cairo", sans-serif; padding-bottom: 96px; }
+  body { font-family: "Cairo", sans-serif; padding-bottom: 170px; }
 
   header { padding: 14px 16px 6px; text-align: center; }
   header h1 { margin: 0; font-size: 18px; font-weight: 700; }
@@ -35,25 +35,29 @@
   }
   .w { border-radius: 8px; padding: 0 2px; cursor: pointer; transition: background .15s, color .15s; }
   .w.active { background: var(--accent); color: var(--accent-text); }
+  .w.hid { color: transparent; background: color-mix(in srgb, var(--hint) 18%, transparent); }
+  .w.hid.active { color: var(--accent-text); background: var(--accent); }
   .end { color: var(--accent); white-space: nowrap; margin: 0 2px; }
 
   #status { text-align: center; color: var(--hint); padding: 40px 16px; font-size: 15px; }
 
   nav {
     position: fixed; inset: auto 0 0 0;
-    display: flex; align-items: center; justify-content: center; gap: 10px;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    padding: 8px 16px calc(10px + env(safe-area-inset-bottom));
     background: var(--panel);
     border-top: 1px solid color-mix(in srgb, var(--hint) 25%, transparent);
   }
+  #step { text-align: center; font-size: 13px; color: var(--hint); min-height: 20px; margin-bottom: 6px; }
+  .row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .row + .row { margin-top: 8px; }
   nav button {
-    font-family: inherit; font-size: 16px; font-weight: 700;
-    border: 0; border-radius: 12px; min-width: 52px; height: 48px; padding: 0 12px;
+    font-family: inherit; font-size: 15px; font-weight: 700;
+    border: 0; border-radius: 12px; height: 44px; padding: 0 10px; flex: 1; max-width: 120px;
     background: var(--bg); color: var(--text);
   }
+  nav button.on { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); color: var(--accent); }
   nav button:disabled { opacity: .4; }
-  #play { background: var(--accent); color: var(--accent-text); min-width: 72px; font-size: 22px; }
-  #rep { font-size: 14px; }
+  #play { background: var(--accent); color: var(--accent-text); font-size: 22px; max-width: 90px; }
 </style>
 </head>
 <body>
@@ -65,10 +69,18 @@
 <div id="text" hidden></div>
 
 <nav>
-  <button id="smaller" aria-label="تصغير الخط">ا−</button>
-  <button id="bigger" aria-label="تكبير الخط">ا+</button>
-  <button id="play" disabled aria-label="تشغيل">▶</button>
-  <button id="rep" aria-label="عدد مرات التكرار">🔁 1/3</button>
+  <div id="step"></div>
+  <div class="row">
+    <button id="smaller" aria-label="تصغير الخط">ا−</button>
+    <button id="bigger" aria-label="تكبير الخط">ا+</button>
+    <button id="hide" aria-label="إخفاء الكلمات">🙈 إخفاء</button>
+    <button id="speed" aria-label="سرعة التلاوة">⏱ 1×</button>
+  </div>
+  <div class="row">
+    <button id="mode" aria-label="طريقة التكرار">المقطع كله</button>
+    <button id="play" disabled aria-label="تشغيل">▶</button>
+    <button id="rep" aria-label="عدد مرات التكرار">🔁 ×3</button>
+  </div>
 </nav>
 
 <audio id="audio" preload="auto"></audio>
@@ -83,19 +95,19 @@ const S = +params.get("s") || 1;
 const A = +params.get("a") || 1;
 const B = Math.max(+params.get("b") || A, A);
 const RECITER = +params.get("r") || 12;
-let repeatTotal = +params.get("rep") || 3;
-let repeatDone = 0;
 
 const $ = (id) => document.getElementById(id);
 const audio = $("audio");
 const textEl = $("text");
 const toArabic = (n) => String(n).replace(/\d/g, (d) => "٠١٢٣٤٥٦٧٨٩"[d]);
 
-// ── حجم الخط (يُحفظ لكل مستخدم على جهازه) ──
+// إعدادات المستخدم تُحفظ على جهازه
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
+
+// ── حجم الخط ──
 let fontSize = +store.get("fontSize") || 30;
 function applyFont() {
   document.documentElement.style.setProperty("--font-size", fontSize + "px");
@@ -105,19 +117,82 @@ applyFont();
 $("bigger").onclick = () => { fontSize = Math.min(fontSize + 4, 64); applyFont(); };
 $("smaller").onclick = () => { fontSize = Math.max(fontSize - 4, 18); applyFont(); };
 
-// ── التكرار ──
+// ── السرعة ──
+const SPEEDS = [0.75, 1, 1.25];
+let speed = +store.get("speed") || 1;
+function applySpeed() {
+  audio.playbackRate = speed;
+  $("speed").textContent = `⏱ ${speed}×`;
+  store.set("speed", speed);
+}
+$("speed").onclick = () => { speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length]; applySpeed(); };
+applySpeed();
+
+// ── الإخفاء: الكلمات مخفية وتظهر وقت ما الشيخ يقولها ──
+let hideOn = store.get("hide") === "1";
+function applyHide() {
+  $("hide").classList.toggle("on", hideOn);
+  document.querySelectorAll(".w").forEach((el) => el.classList.toggle("hid", hideOn));
+  store.set("hide", hideOn ? "1" : "0");
+}
+$("hide").onclick = () => { hideOn = !hideOn; applyHide(); };
+
+// ── خطة التكرار ──
+// "block": المقطع كله يتكرر. "chain": كل آية تتكرر لوحدها ثم تُربط بما قبلها.
 const REPEAT_OPTIONS = [1, 3, 5, 7, 10];
-function showRepeat() { $("rep").textContent = `🔁 ${Math.min(repeatDone + 1, repeatTotal)}/${repeatTotal}`; }
+let repeatTotal = +params.get("rep") || 3;
+let mode = store.get("mode") === "chain" ? "chain" : "block";
+let plan = [], stepIdx = 0, repDone = 0;
+
+function buildPlan() {
+  if (mode === "block" || A === B) {
+    return [{ from: A, to: B, times: repeatTotal, label: B > A ? "المقطع كله" : `الآية ${toArabic(A)}` }];
+  }
+  const steps = [];
+  for (let v = A; v <= B; v++) {
+    steps.push({ from: v, to: v, times: repeatTotal, label: `الآية ${toArabic(v)}` });
+    if (v > A) {
+      steps.push({ from: A, to: v, times: Math.min(2, repeatTotal),
+                   label: `ربط ${toArabic(A)} – ${toArabic(v)}` });
+    }
+  }
+  return steps;
+}
+
+function showStep() {
+  const st = plan[stepIdx];
+  $("step").textContent = st
+    ? `${st.label} · التكرار ${toArabic(Math.min(repDone + 1, st.times))}/${toArabic(st.times)}` +
+      (plan.length > 1 ? ` · الخطوة ${toArabic(stepIdx + 1)}/${toArabic(plan.length)}` : "")
+    : "";
+  $("mode").textContent = mode === "chain" ? "آية آية + ربط" : "المقطع كله";
+  $("mode").classList.toggle("on", mode === "chain");
+  $("rep").textContent = `🔁 ×${repeatTotal}`;
+}
+
+function resetPlan(keepStep = false) {
+  plan = buildPlan();
+  if (!keepStep) stepIdx = 0;
+  stepIdx = Math.min(stepIdx, plan.length - 1);
+  repDone = 0;
+  showStep();
+}
+
 $("rep").onclick = () => {
   repeatTotal = REPEAT_OPTIONS[(REPEAT_OPTIONS.indexOf(repeatTotal) + 1) % REPEAT_OPTIONS.length];
-  repeatDone = Math.min(repeatDone, repeatTotal - 1);
-  showRepeat();
+  resetPlan(true);
 };
-showRepeat();
+$("mode").onclick = () => {
+  mode = mode === "chain" ? "block" : "chain";
+  store.set("mode", mode);
+  resetPlan();
+  if (timings) startStep();
+};
 
 // ── تحميل الآيات والتوقيتات ──
-let segments = [];   // [{start, end, el}] لكل كلمة بالترتيب
-let startMs = 0, endMs = 0;
+let segments = [];      // [{start, end, el, verse}] لكل كلمة بالترتيب
+let timings = null;     // رقم الآية -> {from, to} بالثواني
+const verseWords = {};  // رقم الآية -> عناصر كلماتها
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -141,46 +216,77 @@ async function load() {
   const verses = versePages.flatMap((p) => p.verses)
     .filter((v) => v.verse_number >= A && v.verse_number <= B);
   const file = audioData.audio_files[0];
-  const timings = Object.fromEntries(file.verse_timings.map((t) => [+t.verse_key.split(":")[1], t]));
+  const raw = Object.fromEntries(file.verse_timings.map((t) => [+t.verse_key.split(":")[1], t]));
+  timings = {};
 
   const frag = document.createDocumentFragment();
   for (const v of verses) {
+    const n = v.verse_number;
     const wordEls = {};
+    verseWords[n] = [];
     for (const w of v.words) {
       const span = document.createElement("span");
       if (w.char_type_name === "end") {
         span.className = "end";
-        span.textContent = `﴿${toArabic(v.verse_number)}﴾`;
+        span.textContent = `﴿${toArabic(n)}﴾`;
       } else {
         span.className = "w";
         span.textContent = w.text_uthmani;
         wordEls[w.position] = span;
+        verseWords[n].push(span);
       }
       frag.append(span, " ");
     }
-    for (const seg of timings[v.verse_number]?.segments || []) {
+    const t = raw[n];
+    timings[n] = { from: t.timestamp_from / 1000, to: t.timestamp_to / 1000 };
+    for (const seg of t.segments || []) {
       if (seg.length < 3) continue;
       const [pos, start, end] = [seg[0], seg[seg.length - 2], seg[seg.length - 1]];
       const el = wordEls[pos];
       if (!el) continue;
-      segments.push({ start: start / 1000, end: end / 1000, el });
-      el.onclick = () => { audio.currentTime = start / 1000; play(); };
+      segments.push({ start: start / 1000, end: end / 1000, el, verse: n });
+      el.onclick = () => jumpToWord(n, start / 1000);
     }
   }
   textEl.append(frag);
   segments.sort((x, y) => x.start - y.start);
 
-  startMs = timings[A].timestamp_from;
-  endMs = timings[B].timestamp_to;
   audio.src = file.audio_url;
-  audio.currentTime = startMs / 1000;
+  applySpeed();
+  applyHide();
+  resetPlan();
+  audio.currentTime = timings[A].from;
 
   $("status").hidden = true;
   textEl.hidden = false;
   $("play").disabled = false;
 }
 
-// ── التشغيل وتتبّع الكلمة الحالية ──
+// ── التشغيل ──
+const stepStart = () => timings[plan[stepIdx].from].from;
+const stepEnd = () => timings[plan[stepIdx].to].to;
+
+function rehideStep() {
+  if (!hideOn) return;
+  const st = plan[stepIdx];
+  for (let v = st.from; v <= st.to; v++) verseWords[v]?.forEach((el) => el.classList.add("hid"));
+}
+
+function startStep() {
+  audio.currentTime = stepStart();
+  rehideStep();
+  showStep();
+}
+
+function jumpToWord(verse, time) {
+  if (mode === "chain") {
+    const i = plan.findIndex((s) => s.from === verse && s.to === verse);
+    if (i >= 0) { stepIdx = i; repDone = 0; showStep(); }
+  }
+  audio.currentTime = time;
+  play();
+}
+
 let active = null, raf = 0;
 
 function highlight() {
@@ -189,32 +295,40 @@ function highlight() {
   const el = seg ? seg.el : null;
   if (el !== active) {
     active?.classList.remove("active");
-    el?.classList.add("active");
-    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (el) {
+      el.classList.add("active");
+      el.classList.remove("hid");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
     active = el;
   }
 }
 
 function tick() {
-  if (audio.currentTime >= endMs / 1000) {
-    repeatDone++;
-    if (repeatDone < repeatTotal) {
-      audio.currentTime = startMs / 1000;
-    } else {
-      repeatDone = 0;
-      audio.pause();
-      audio.currentTime = startMs / 1000;
-      tg?.HapticFeedback?.notificationOccurred("success");
+  if (audio.currentTime >= stepEnd()) {
+    repDone++;
+    if (repDone >= plan[stepIdx].times) {
+      repDone = 0;
+      stepIdx++;
+      if (stepIdx >= plan.length) {           // خلصت الخطة كلها
+        stepIdx = 0;
+        audio.pause();
+        applyHide();
+        startStep();
+        tg?.HapticFeedback?.notificationOccurred("success");
+        return;
+      }
     }
-    showRepeat();
+    startStep();
   }
   highlight();
   if (!audio.paused) raf = requestAnimationFrame(tick);
 }
 
 function play() {
-  const t = audio.currentTime * 1000;
-  if (t < startMs || t >= endMs) audio.currentTime = startMs / 1000;
+  const t = audio.currentTime;
+  if (t < stepStart() - 0.05 || t >= stepEnd()) startStep();
+  audio.playbackRate = speed;
   audio.play();
 }
 
@@ -222,6 +336,7 @@ audio.onplay = () => { $("play").textContent = "⏸"; cancelAnimationFrame(raf);
 audio.onpause = () => { $("play").textContent = "▶"; highlight(); };
 $("play").onclick = () => (audio.paused ? play() : audio.pause());
 
+showStep();
 load().catch((e) => {
   console.error(e);
   $("status").textContent = "⚠️ تعذّر التحميل، تأكد من الإنترنت وحاول مرة أخرى.";
